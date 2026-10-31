@@ -18,7 +18,7 @@ logger = logging.getLogger("mcp-client")
 KEYCLOAK_URL = os.getenv("KEYCLOAK_TOKEN_URL", "http://localhost:8081/realms/mcp/protocol/openid-connect/token")
 CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID", "mcp")
 CLIENT_SECRET = os.getenv("KEYCLOAK_CLIENT_SECRET", "uOxcgeKNfuWs7QK4D8qTqsQ8JzsLJe22")
-PASSWORD_USER = os.getenv("KEYCLOAK_PASSWORD_USER", "testuser01")
+PASSWORD_USER = os.getenv("KEYCLOAK_PASSWORD_USER", "testuser02")
 PASSWORD_PASSWORD = os.getenv("KEYCLOAK_PASSWORD_PASSWORD", PASSWORD_USER)
 MCP_ENDPOINT = os.getenv("MCP_ENDPOINT", "http://localhost:8000/mcp")
 

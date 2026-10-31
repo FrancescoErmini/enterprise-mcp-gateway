@@ -14,8 +14,8 @@ services:
               add:
                 headers:
                   - X-API-Key:${{ env "DECK_WEATHERAPI_LOCAL_KEY" }}
-  - name: mcp-server
-    url: http://mcp-server:8080
+  - name: opa-guard
+    url: http://opa-guard:8090
     routes:
       - name: mcp-route
         paths:
