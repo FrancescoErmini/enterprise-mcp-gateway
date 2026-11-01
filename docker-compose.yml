@@ -116,3 +116,14 @@ services:
     build: ./frontend
     ports: ["3000:80"]
     networks: [mcp-net]
+
+  chat:
+    build: ./chat
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      KONG_URL: http://kong:8000
+    ports: ["3001:8000"]
+    networks: [mcp-net]
+    depends_on: [kong]

@@ -178,6 +178,7 @@ python tests/test_mcp_client.py --all
 | Servizio | URL host |
 |---|---|
 | Frontend (login + chiamate dirette alle API) | http://localhost:3000 |
+| **Chat AI** (OpenAI + tool MCP via Kong, con il JWT dell'utente) | http://localhost:3001 |
 | Keycloak (admin/admin) | http://localhost:8080 |
 | Kong proxy: `/mcp/crm`, `/mcp/orders` | http://localhost:8000 |
 | CRM API / Orders API | http://localhost:8001 / :8002 |
@@ -191,3 +192,5 @@ Flusso: Agente -> Kong -> OPA Guard (introspection + policy OPA sul tool JSON-RP
 Policy: `opa/policies/mcp.rego` (test: `docker run --rm -v ./opa/policies:/p openpolicyagent/opa:1.4.1 test /p -v`).
 
 Note: Kong gira in DB-less con `kong/kong.yml`; Postgres serve solo a Keycloak.
+
+Chat: crea un file `.env` (ignorato da git) con `OPENAI_API_KEY=...` (opzionale `OPENAI_MODEL`, default `gpt-4o-mini`). Se modifichi il realm Keycloak serve `docker compose down -v` per reimportarlo.
