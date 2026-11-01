@@ -1,0 +1,7 @@
+{
+  "tool_registry": {
+    "crm_get_customers": { "app": "crm", "roles_required": ["crm-user"] },
+    "crm_delete_customer": { "app": "crm", "roles_required": ["crm-admin"] },
+    "orders_get_orders": { "app": "orders", "roles_required": ["orders-user"] }
+  }
+}

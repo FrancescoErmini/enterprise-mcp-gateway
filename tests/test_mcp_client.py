@@ -12,6 +12,8 @@ import requests
 
 KEYCLOAK = "http://localhost:8080/realms/mcp-demo/protocol/openid-connect/token"
 KONG = "http://localhost:8000"
+# Deterministic routing (same map as kong/kong.yml): tool namespace -> Kong path. No scatter-gather.
+NAMESPACE_ROUTES = {"crm": "/mcp/crm", "orders": "/mcp/orders"}
 HEADERS = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
 
 
@@ -57,7 +59,13 @@ def rpc(path, token, method, params=None, rpc_id=1):
     return r.status_code, parse(r) if r.status_code != 202 else None
 
 
-def call_tool(path, token, tool, arguments=None):
+def route_for(tool):
+    """O(1): `crm_get_customers` -> /mcp/crm."""
+    return NAMESPACE_ROUTES[tool.split("_", 1)[0]]
+
+
+def call_tool(token, tool, arguments=None):
+    path = route_for(tool)
     rpc(path, token, "initialize", {
         "protocolVersion": "2025-03-26", "capabilities": {},
         "clientInfo": {"name": "agent-simulator", "version": "1.0"},
@@ -66,9 +74,21 @@ def call_tool(path, token, tool, arguments=None):
     return rpc(path, token, "tools/call", {"name": tool, "arguments": arguments or {}}, rpc_id=2)
 
 
-def scenario(label, expected_status, path, token, tool, arguments=None):
-    status, body = call_tool(path, token, tool, arguments)
-    ok = status == expected_status
+def list_tools(token, namespace):
+    _, body = rpc(NAMESPACE_ROUTES[namespace], token, "tools/list")
+    return sorted(t["name"] for t in body["result"]["tools"])
+
+
+def check_list(label, token, namespace, expected):
+    names = list_tools(token, namespace)
+    ok = names == sorted(expected)
+    print(f"[{'PASS' if ok else 'FAIL'}] {label}: tools/list {namespace} -> {names} (expected {sorted(expected)})")
+    return ok
+
+
+def scenario(label, expected_status, token, tool, arguments=None, body_has=None):
+    status, body = call_tool(token, tool, arguments)
+    ok = status == expected_status and (body_has is None or any(s in json.dumps(body) for s in body_has))
     print(f"[{'PASS' if ok else 'FAIL'}] {label}: HTTP {status} (expected {expected_status})")
     print(json.dumps(body, indent=2)[:600])
     return ok
@@ -80,15 +100,22 @@ def main():
     args = ap.parse_args()
 
     wait_for_stack()
-    mario, luigi = get_token("mario.sales"), get_token("luigi.finance")
+    mario, luigi, anna = get_token("mario.sales"), get_token("luigi.finance"), get_token("anna.admin")
 
-    results = [scenario("mario.sales -> crm get_customers", 200, "/mcp/crm", mario, "get_customers")]
+    results = [scenario("mario.sales -> crm_get_customers", 200, mario, "crm_get_customers")]
     if args.all:
         results += [
-            scenario("mario.sales -> orders get_orders", 403, "/mcp/orders", mario, "get_orders"),
-            scenario("luigi.finance -> orders get_orders", 200, "/mcp/orders", luigi, "get_orders"),
-            scenario("luigi.finance -> crm get_customers", 403, "/mcp/crm", luigi, "get_customers"),
-            scenario("no token -> crm get_customers", 401, "/mcp/crm", None, "get_customers"),
+            scenario("mario.sales -> orders_get_orders", 403, mario, "orders_get_orders"),
+            scenario("mario.sales -> crm_delete_customer (needs crm-admin)", 403, mario, "crm_delete_customer", {"customer_id": 3}),
+            scenario("anna.admin -> crm_delete_customer", 200, anna, "crm_delete_customer", {"customer_id": 3},
+                     body_has=("deleted", "not found")),  # 2nd run: already deleted
+            scenario("luigi.finance -> orders_get_orders", 200, luigi, "orders_get_orders"),
+            scenario("luigi.finance -> crm_get_customers", 403, luigi, "crm_get_customers"),
+            scenario("no token -> crm_get_customers", 401, None, "crm_get_customers"),
+            check_list("mario.sales", mario, "crm", ["crm_get_customers"]),
+            check_list("mario.sales", mario, "orders", []),
+            check_list("anna.admin", anna, "crm", ["crm_get_customers", "crm_delete_customer"]),
+            check_list("luigi.finance", luigi, "orders", ["orders_get_orders"]),
         ]
     sys.exit(0 if all(results) else 1)
 

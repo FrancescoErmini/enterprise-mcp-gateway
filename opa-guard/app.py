@@ -2,6 +2,7 @@
 
 Flow: Bearer token -> Keycloak introspection -> JSON-RPC inspection -> OPA decision -> proxy.
 """
+import json
 import logging
 import os
 
@@ -82,7 +83,7 @@ async def mcp_proxy(request: Request):
         },
     }
     try:
-        opa = (await client.post(OPA_URL, json={"input": opa_input})).json().get("result", {})
+        opa = (await client.post(OPA_URL, json={"input": opa_input})).json().get("result", {})  # allow, reason, allowed_tools
     except Exception as exc:
         log.error("OPA failed: %s", exc)
         return rpc_error(502, "Policy engine unavailable")
@@ -100,4 +101,18 @@ async def mcp_proxy(request: Request):
     log.info("forwarding to %s", UPSTREAM_URL)
     upstream = await client.post(UPSTREAM_URL, content=body, headers=headers)
     out = {k: v for k, v in upstream.headers.items() if k.lower() in ("content-type", "mcp-session-id")}
-    return Response(upstream.content, status_code=upstream.status_code, headers=out)
+    content = upstream.content
+
+    # Dynamic filtering: tools/list only exposes the tools the registry allows for this user.
+    if rpc.get("method") == "tools/list":
+        try:
+            body_json = upstream.json()
+            visible = set(opa.get("allowed_tools", []))
+            tools = body_json.get("result", {}).get("tools", [])
+            body_json["result"]["tools"] = [t for t in tools if t.get("name") in visible]
+            content = json.dumps(body_json).encode()
+            log.info("tools/list filtered: %d -> %d visible=%s", len(tools),
+                     len(body_json["result"]["tools"]), sorted(visible))
+        except (ValueError, KeyError, AttributeError):
+            log.warning("tools/list response not filterable, forwarded as is")
+    return Response(content, status_code=upstream.status_code, headers=out)

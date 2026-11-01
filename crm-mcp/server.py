@@ -26,13 +26,13 @@ def _call(ctx: Context, method: str, path: str) -> str:
 
 
 @mcp.tool()
-def get_customers(ctx: Context) -> str:
+def crm_get_customers(ctx: Context) -> str:
     """List all CRM customers."""
     return _call(ctx, "GET", "/api/customers")
 
 
 @mcp.tool()
-def delete_customer(customer_id: int, ctx: Context) -> str:
+def crm_delete_customer(customer_id: int, ctx: Context) -> str:
     """Delete a CRM customer by id."""
     return _call(ctx, "DELETE", f"/api/customers/{customer_id}")
 

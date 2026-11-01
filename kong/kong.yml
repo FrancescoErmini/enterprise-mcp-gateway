@@ -1,8 +1,17 @@
 _format_version: "3.0"
 
+# Deterministic routing map (no scatter-gather): the namespace of a tool decides the path.
+#
+#   tool prefix | Kong path (localhost:8000) | upstream (OPA Guard sidecar)
+#   ------------+---------------------------+-----------------------------
+#   crm_*       | /mcp/crm                  | crm-opa-guard:8090
+#   orders_*    | /mcp/orders               | orders-opa-guard:8090
+#
+# A client that wants to call `crm_get_customers` already knows it must POST on /mcp/crm.
+
 services:
   - name: crm-mcp
-    url: http://crm-guard:8090/mcp
+    url: http://crm-opa-guard:8090/mcp
     routes:
       - name: crm-mcp-route
         paths:
@@ -10,7 +19,7 @@ services:
         strip_path: true
 
   - name: orders-mcp
-    url: http://orders-guard:8090/mcp
+    url: http://orders-opa-guard:8090/mcp
     routes:
       - name: orders-mcp-route
         paths:

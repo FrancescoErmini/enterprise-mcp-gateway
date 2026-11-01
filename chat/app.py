@@ -16,7 +16,8 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger("chat")
 
 KONG_URL = os.getenv("KONG_URL", "http://kong:8000")
-MCP_PATHS = os.getenv("MCP_PATHS", "/mcp/crm,/mcp/orders").split(",")
+# Same map as kong/kong.yml: tool namespace prefix -> Kong path (deterministic routing)
+ROUTES = dict(item.split("=") for item in os.getenv("MCP_ROUTES", "crm=/mcp/crm,orders=/mcp/orders").split(","))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 MAX_STEPS = 5
@@ -52,9 +53,9 @@ async def mcp_rpc(path: str, token: str, method: str, params: dict | None = None
 
 
 async def discover_tools(token: str):
-    """tools/list on every MCP endpoint -> (OpenAI tool specs, tool name -> endpoint path)."""
+    """Fetch the tool schemas (already filtered per user by the guards) -> OpenAI tool specs."""
     specs, routes = [], {}
-    for path in MCP_PATHS:
+    for path in ROUTES.values():
         status, body = await mcp_rpc(path, token, "tools/list")
         if status != 200:
             continue
@@ -115,7 +116,7 @@ async def chat(req: ChatRequest, request: Request):
         for call in msg["tool_calls"]:
             name = call["function"]["name"]
             args = json.loads(call["function"]["arguments"] or "{}")
-            path = routes.get(name)
+            path = ROUTES.get(name.split("_", 1)[0])  # O(1) lookup by namespace, no scatter-gather
             log.info("MCP call %s tool=%s args=%s", path, name, args)
             result = await run_tool(path, token, name, args) if path else f"Unknown tool {name}"
             log.info("MCP result %s: %s", name, result[:120])

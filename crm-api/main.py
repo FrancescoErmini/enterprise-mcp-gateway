@@ -24,7 +24,7 @@ def list_customers(claims: dict = Depends(require_role("crm-user"))):
 
 
 @app.delete("/api/customers/{customer_id}")
-def delete_customer(customer_id: int, claims: dict = Depends(require_role("crm-user"))):
+def delete_customer(customer_id: int, claims: dict = Depends(require_role("crm-admin"))):
     if customer_id not in CUSTOMERS:
         raise HTTPException(404, f"Customer {customer_id} not found")
     deleted = CUSTOMERS.pop(customer_id)

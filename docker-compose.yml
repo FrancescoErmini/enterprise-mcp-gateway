@@ -81,7 +81,7 @@ services:
     networks: [mcp-net]
     depends_on: [orders-api]
 
-  crm-guard:
+  crm-opa-guard:
     build: ./opa-guard
     environment:
       <<: *guard-env
@@ -90,7 +90,7 @@ services:
     networks: [mcp-net]
     depends_on: [crm-mcp, opa, keycloak]
 
-  orders-guard:
+  orders-opa-guard:
     build: ./opa-guard
     environment:
       <<: *guard-env
@@ -111,7 +111,7 @@ services:
     volumes: [./kong/kong.yml:/kong/kong.yml:ro]
     ports: ["8000:8000"]
     networks: [mcp-net]
-    depends_on: [crm-guard, orders-guard]
+    depends_on: [crm-opa-guard, orders-opa-guard]
 
   frontend:
     build: ./frontend

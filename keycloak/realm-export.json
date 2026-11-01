@@ -6,8 +6,18 @@
   "accessTokenLifespan": 1800,
   "roles": {
     "realm": [
-      { "name": "crm-user", "description": "Can use the CRM application and its MCP tools" },
-      { "name": "orders-user", "description": "Can use the Orders application and its MCP tools" }
+      {
+        "name": "crm-user",
+        "description": "Can use the CRM application and its MCP tools"
+      },
+      {
+        "name": "orders-user",
+        "description": "Can use the Orders application and its MCP tools"
+      },
+      {
+        "name": "crm-admin",
+        "description": "Can delete CRM customers"
+      }
     ]
   },
   "clients": [
@@ -18,8 +28,14 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["http://localhost:3000/*", "http://localhost:3001/*"],
-      "webOrigins": ["http://localhost:3000", "http://localhost:3001"],
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:3001/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:3001"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:3000/*"
@@ -48,8 +64,16 @@
       "email": "mario.sales@example.com",
       "firstName": "Mario",
       "lastName": "Sales",
-      "credentials": [{ "type": "password", "value": "test", "temporary": false }],
-      "realmRoles": ["crm-user"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "crm-user"
+      ]
     },
     {
       "username": "luigi.finance",
@@ -58,8 +82,35 @@
       "email": "luigi.finance@example.com",
       "firstName": "Luigi",
       "lastName": "Finance",
-      "credentials": [{ "type": "password", "value": "test", "temporary": false }],
-      "realmRoles": ["orders-user"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "orders-user"
+      ]
+    },
+    {
+      "username": "anna.admin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "anna.admin@example.com",
+      "firstName": "Anna",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "crm-user",
+        "crm-admin"
+      ]
     }
   ]
 }

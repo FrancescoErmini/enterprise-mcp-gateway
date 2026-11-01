@@ -189,10 +189,24 @@ Keycloak impiega circa un minuto per importare il realm `mcp-demo`. Per fermare 
 | CRM API / Orders API | http://localhost:8001 / :8002 | |
 | OPA | http://localhost:8181 | |
 
-Utenti (password `test`): `mario.sales` (ruolo `crm-user`), `luigi.finance` (ruolo `orders-user`).
+Utenti (password `test`):
+
+| Utente | Ruoli | Può fare |
+|---|---|---|
+| `mario.sales` | `crm-user` | leggere i clienti (`crm_get_customers`); **non** cancellare, **non** vedere Orders |
+| `anna.admin` | `crm-user`, `crm-admin` | leggere e cancellare clienti (`crm_delete_customer`) |
+| `luigi.finance` | `orders-user` | leggere gli ordini (`orders_get_orders`); nessun accesso al CRM |
+
 Client Keycloak: `frontend-web` (public), `mcp-gateway` (secret `mcp-secret-123`, usato dai guard per l'introspection).
 
 Flusso: Agente -> Kong -> OPA Guard (introspection + policy OPA sul tool JSON-RPC) -> Micro-MCP -> API REST con lo stesso JWT.
+#### Tool Registry, namespace e routing
+
+- **Namespace obbligatorio**: ogni tool ha il prefisso della sua app (`crm_get_customers`, `crm_delete_customer`, `orders_get_orders`), così app diverse non possono collidere.
+- **Tool Registry** (`opa/policies/data.json`, caricato da OPA come `data.tool_registry`): mappa ogni tool a `app` e `roles_required`. La policy `opa/policies/mcp.rego` non contiene ruoli: cerca il tool nel registry, verifica che appartenga al dominio chiamato e che l'utente abbia almeno uno dei ruoli richiesti. Il file è in `opa/policies/`, già montato su `/policies` nel container OPA, e viene ricaricato a caldo (`--watch`): per esporre un nuovo tool o cambiare i ruoli basta modificare una riga, senza toccare agente o policy.
+- **Filtro dinamico di `tools/list`**: il guard chiede a OPA `allowed_tools` e restituisce all'agente solo i tool permessi all'utente (mario vede solo `crm_get_customers`; su Orders non vede nulla). Una `tools/call` verso un tool non permesso resta comunque negata (403).
+- **Routing deterministico** (`kong/kong.yml`, niente scatter-gather): il prefisso del tool decide la rotta, quindi `crm_get_customers` -> `POST /mcp/crm` -> `crm-opa-guard:8090`, `orders_get_orders` -> `POST /mcp/orders` -> `orders-opa-guard:8090`. Il client di test e la chat usano la stessa mappa prefisso -> path.
+
 Policy: `opa/policies/mcp.rego`. Test: `docker run --rm -v "$PWD/opa/policies:/p" openpolicyagent/opa:1.4.1 test /p -v`.
 Kong gira in DB-less con `kong/kong.yml`; Postgres serve solo a Keycloak.
 
@@ -200,9 +214,11 @@ Kong gira in DB-less con `kong/kong.yml`; Postgres serve solo a Keycloak.
 
 **Da UI - Chat AI (http://localhost:3001)**
 1. Clicca *Login* e accedi come `mario.sales` / `test`.
-2. Scrivi *"Elenca i clienti del CRM"*: l'agente chiama il tool `get_customers`; sotto la risposta trovi il riquadro espandibile con la chiamata MCP e il risultato.
-3. Scrivi *"Mostrami gli ordini"*: la policy OPA nega (`mario.sales` non ha `orders-user`), il riquadro è rosso e l'agente spiega che manca il permesso.
-4. Logout, rientra come `luigi.finance` / `test` e ripeti: ora gli ordini passano e il CRM è negato.
+2. Scrivi *"Elenca i clienti del CRM"*: l'agente chiama `crm_get_customers`; sotto la risposta trovi il riquadro espandibile con la chiamata MCP e il risultato.
+3. Scrivi *"Mostrami gli ordini"* o *"Cancella il cliente 1"*: mario non ha i tool `orders_get_orders` / `crm_delete_customer` (il guard li ha filtrati da `tools/list`), quindi l'agente risponde che non può farlo.
+4. Logout, entra come `anna.admin` / `test` e scrivi *"Cancella il cliente 2, confermo"*: ora `crm_delete_customer` è disponibile e il cliente viene cancellato (l'agente chiede conferma prima).
+5. Logout, entra come `luigi.finance` / `test`: vede solo gli ordini.
+6. Per far vedere un 403 vero, usa lo script da riga di comando (sotto): chiama direttamente i tool negati.
 
 **Da UI - Frontend semplice (http://localhost:3000)**
 Login, poi i bottoni *Chiama CRM API* / *Chiama Orders API* chiamano direttamente le API REST con il token (senza passare da MCP): 200 se hai il ruolo, 403 altrimenti.
@@ -210,8 +226,8 @@ Login, poi i bottoni *Chiama CRM API* / *Chiama Orders API* chiamano direttament
 **Da riga di comando - simulatore di agente AI**
 ```bash
 pip install -r tests/requirements.txt
-python tests/test_mcp_client.py          # mario.sales -> get_customers
-python tests/test_mcp_client.py --all    # + scenari di autorizzazione (attesi 200/403/200/403/401)
+python tests/test_mcp_client.py          # mario.sales -> crm_get_customers
+python tests/test_mcp_client.py --all    # + scenari di autorizzazione: 403 su tool non permessi, 401 senza token, tools/list filtrato per utente
 ```
 
 ### 3. Come analizzare i log
@@ -220,31 +236,30 @@ Ogni componente scrive su stdout, quindi si legge con `docker compose logs`.
 
 ```bash
 docker compose logs -f                              # tutto, in streaming
-docker compose logs -f --tail 20 kong crm-guard     # alcuni servizi, ultime 20 righe
+docker compose logs -f --tail 20 kong crm-opa-guard     # alcuni servizi, ultime 20 righe
 docker compose logs --no-log-prefix --since 2m chat # senza prefisso e solo ultimi 2 minuti
-docker compose logs crm-guard | grep -E "DENY|ALLOW"
+docker compose logs crm-opa-guard | grep -E "DENY|ALLOW"
 ```
 
-Servizi: `kong`, `crm-guard`, `orders-guard`, `opa`, `crm-mcp`, `orders-mcp`, `crm-api`, `orders-api`, `chat`, `keycloak`, `postgres`, `frontend`.
+Servizi: `kong`, `crm-opa-guard`, `orders-opa-guard`, `opa`, `crm-mcp`, `orders-mcp`, `crm-api`, `orders-api`, `chat`, `keycloak`, `postgres`, `frontend`.
 
-Cosa cercare lungo il percorso di una richiesta (consiglio: `docker compose logs -f chat kong crm-guard opa crm-mcp crm-api` in un terminale mentre usi la chat):
+Cosa cercare lungo il percorso di una richiesta (consiglio: `docker compose logs -f chat kong crm-opa-guard opa crm-mcp crm-api` in un terminale mentre usi la chat):
 
 | Servizio | Cosa mostra |
 |---|---|
 | `chat` | messaggio utente, tool scoperti via Kong, risposta di OpenAI (`tool_calls` / `final answer`), chiamata MCP e risultato |
 | `kong` | access log: `POST /mcp/crm 200` o `403`, con `kong_request_id` |
-| `crm-guard` / `orders-guard` | `OPA decision user=... roles=... method=tools/call tool=... -> ALLOW/DENY (motivo)`, `401` per token mancante/inattivo, inoltro al micro-MCP |
+| `crm-opa-guard` / `orders-opa-guard` | `OPA decision user=... roles=... method=tools/call tool=... -> ALLOW/DENY (motivo)`, `401` per token mancante/inattivo, inoltro al micro-MCP |
 | `opa` | decision log JSON: `input` completo e `result` di ogni valutazione (`allow`, `reason`) |
 | `crm-mcp` / `orders-mcp` | traduzione tool -> REST con conferma che il JWT è propagato (`JWT forwarded: True`) e status del backend |
 | `crm-api` / `orders-api` | `ALLOW user=... role=...` oppure `DENY 401/403` con il motivo (validazione firma JWT e ruolo) |
 | `keycloak` | eventi: `type="LOGIN"` (login utente) e `type="INTROSPECT_TOKEN"` (verifica token fatta dai guard con `mcp-gateway`) |
 
-Esempio di richiesta negata (`mario.sales` -> orders), visibile in sequenza:
+Esempio di richiesta negata (`mario.sales` -> `crm_delete_customer`, provocabile con `python tests/test_mcp_client.py --all`), visibile in sequenza:
 ```text
-chat         MCP call /mcp/orders tool=get_orders args={}
-kong         "POST /mcp/orders HTTP/1.1" 403
-orders-guard OPA decision user=mario.sales roles=['crm-user'] method=tools/call tool=get_orders -> DENY (user 'mario.sales' lacks role 'orders-user' ...)
+kong             "POST /mcp/crm HTTP/1.1" 403
+crm-opa-guard    OPA decision user=mario.sales roles=['crm-user'] method=tools/call tool=crm_delete_customer -> DENY (user 'mario.sales' lacks any of roles ["crm-admin"] for tool 'crm_delete_customer')
 ```
-La richiesta si ferma al guard: `orders-mcp` e `orders-api` non vedono nulla.
+La richiesta si ferma al guard: `crm-mcp` e `crm-api` non vedono nulla. Il filtro di `tools/list` è visibile nel log del guard: `tools/list filtered: 2 -> 1 visible=['crm_get_customers']`.
 
 Per filtrare l'output JSON di OPA: `docker compose logs --no-log-prefix opa | grep decision_id`.
