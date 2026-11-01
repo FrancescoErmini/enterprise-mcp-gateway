@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>MCP Demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  button { padding: .5rem 1rem; margin-right: .5rem; cursor: pointer; }
+  pre { background: #111; color: #0f0; padding: 1rem; min-height: 8rem; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>MCP Demo</h1>
+<p id="who">Non autenticato</p>
+<button id="login">Login (Keycloak)</button>
+<button id="logout" hidden>Logout</button>
+<hr>
+<button id="crm">Chiama CRM API</button>
+<button id="orders">Chiama Orders API</button>
+<pre id="out"></pre>
+<script>
+const KC = "http://localhost:8080/realms/mcp-demo/protocol/openid-connect";
+const CLIENT_ID = "frontend-web";
+const REDIRECT = location.origin + "/";
+const $ = id => document.getElementById(id);
+
+const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
+  .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const rand = () => b64url(crypto.getRandomValues(new Uint8Array(32)));
+
+async function login() {
+  const verifier = rand();
+  sessionStorage.setItem("verifier", verifier);
+  const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  location = `${KC}/auth?` + new URLSearchParams({
+    client_id: CLIENT_ID, redirect_uri: REDIRECT, response_type: "code", scope: "openid",
+    code_challenge: challenge, code_challenge_method: "S256",
+  });
+}
+
+async function handleCallback() {
+  const code = new URLSearchParams(location.search).get("code");
+  if (!code) return;
+  const resp = await fetch(`${KC}/token`, {
+    method: "POST",
+    body: new URLSearchParams({
+      grant_type: "authorization_code", client_id: CLIENT_ID, code,
+      redirect_uri: REDIRECT, code_verifier: sessionStorage.getItem("verifier"),
+    }),
+  });
+  const data = await resp.json();
+  if (data.access_token) sessionStorage.setItem("token", data.access_token);
+  history.replaceState({}, "", REDIRECT);
+}
+
+function claims() {
+  const t = sessionStorage.getItem("token");
+  return t ? JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))) : null;
+}
+
+async function callApi(url) {
+  const token = sessionStorage.getItem("token");
+  if (!token) { $("out").textContent = "Effettua prima il login."; return; }
+  try {
+    const r = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    $("out").textContent = `HTTP ${r.status}\n` + JSON.stringify(await r.json(), null, 2);
+  } catch (e) { $("out").textContent = "Errore: " + e; }
+}
+
+function render() {
+  const c = claims();
+  $("who").textContent = c
+    ? `Utente: ${c.preferred_username} - ruoli: ${(c.realm_access?.roles || []).join(", ")}`
+    : "Non autenticato";
+  $("login").hidden = !!c;
+  $("logout").hidden = !c;
+}
+
+$("login").onclick = login;
+$("logout").onclick = () => { sessionStorage.removeItem("token"); render(); };
+$("crm").onclick = () => callApi("http://localhost:8001/api/customers");
+$("orders").onclick = () => callApi("http://localhost:8002/api/orders");
+handleCallback().then(render);
+</script>
+</body>
+</html>

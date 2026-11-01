@@ -1,77 +1,43 @@
-package mcp
+package mcp.authz
 
 import rego.v1
 
+# Tool -> realm role required to invoke it.
+tool_roles := {
+	"get_customers": "crm-user",
+	"delete_customer": "crm-user",
+	"get_orders": "orders-user",
+}
+
 default allow := false
 
-# ---- Configuration (edit to match your environment) ----
-allowed_issuers := {
-  "http://localhost:8081/realms/mcp",
-}
+roles := object.get(input.token, "roles", [])
 
-allowed_clients := {
-  "mcp",
-}
-
-# Choose one approach for users:
-# A) allowlist of usernames
-allowed_users := {
-  "testuser01",
-}
-
-# B) allowlist of emails (optional)
-allowed_emails := {
-  "fermini@menarini.it",
-}
-
-# ---- Helpers ----
-now_s := time.now_ns() / 1000000000
-
-client_id := input.token.azp if input.token.azp
-client_id := input.token.client_id if input.token.client_id  # some introspection payloads
-
-username := input.token.preferred_username if input.token.preferred_username
-email := input.token.email if input.token.email
-
-valid_issuer if allowed_issuers[input.token.iss]
-
-valid_client if allowed_clients[client_id]
-
-valid_user if allowed_users[username]
-valid_user if allowed_emails[email]
-
-not_expired if {
-  # Only enforce exp if present (JWT has it; introspection sometimes uses "exp" too)
-  not input.token.exp
-} else if {
-  input.token.exp > now_s
-}
-
-# Optional: require token active if you're passing introspection response
-active if {
-  not input.token.active
-} else if {
-  input.token.active == true
-}
-
-# Optional: role check (Keycloak JWT typically has realm_access.roles)
-has_role(role) if {
-  roles := input.token.realm_access.roles
-  roles[_] == role
-}
-
-# ---- Main decision ----
+# Protocol-level calls (initialize, tools/list, ping, notifications) only need a valid token.
 allow if {
-  valid_issuer
-  active
-  not_expired
-  valid_client
-  valid_user
+	input.token.active == true
+	input.rpc.method != "tools/call"
+}
 
-  # Optional: require a role
-  # has_role("uma_authorization")
+# Tool invocations need the role mapped to the tool. Unknown tools are denied.
+allow if {
+	input.token.active == true
+	input.rpc.method == "tools/call"
+	required := tool_roles[input.rpc.tool]
+	required in roles
+}
 
-  # Optional: authorize by HTTP request
-  # input.request.http.method == "POST"
-  # input.request.http.path == "/mcp"
+reason := "token inactive" if not input.token.active == true
+
+reason := sprintf("unknown tool '%s'", [input.rpc.tool]) if {
+	input.token.active == true
+	input.rpc.method == "tools/call"
+	not tool_roles[input.rpc.tool]
+}
+
+reason := sprintf("user '%s' lacks role '%s' for tool '%s'", [input.token.username, tool_roles[input.rpc.tool], input.rpc.tool]) if {
+	input.token.active == true
+	input.rpc.method == "tools/call"
+	required := tool_roles[input.rpc.tool]
+	not required in roles
 }

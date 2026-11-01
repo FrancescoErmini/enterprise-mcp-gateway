@@ -160,22 +160,34 @@ def handle_ai_mcp_request(http_request, delegated_user_jwt):
     except Exception as e:
         return mcp_error_response(e.message)
 
+```
 
-# 1. Clona il repository
-git clone [https://github.com/tuo-org/enterprise-mcp-gateway.git](https://github.com/tuo-org/enterprise-mcp-gateway.git)
-cd enterprise-mcp-gateway
+---
 
-# 2. Avvia l'infrastruttura in background
-docker-compose up -d
+## ▶️ Demo eseguibile
 
-# 3. Esegui il bootstrap delle migrazioni database per Kong
-docker-compose run --rm kong-bootstrap
+Tutto gira con Docker Compose, nessun secret esterno.
 
-# 4. Verifica lo stato dei container
-docker-compose ps
-# MCP demo
+```bash
+docker compose up --build -d
+# attendi ~60s che Keycloak importi il realm `mcp-demo`
+pip install -r tests/requirements.txt
+python tests/test_mcp_client.py --all
+```
 
-1. `docker compose up -d`
-2. `DECK_WEATHERAPI_LOCAL_KEY=mcp-test-key-2026 deck gateway sync kong/weather-api-deck.yaml`
-3. Configure Keycloak realm `mcp`, client `mcp`, user `testuser01` / password `testuser01` (or reuse your own secrets)
-4. `cd mcp-client && python client.py --grant-type password`
+| Servizio | URL host |
+|---|---|
+| Frontend (login + chiamate dirette alle API) | http://localhost:3000 |
+| Keycloak (admin/admin) | http://localhost:8080 |
+| Kong proxy: `/mcp/crm`, `/mcp/orders` | http://localhost:8000 |
+| CRM API / Orders API | http://localhost:8001 / :8002 |
+| OPA | http://localhost:8181 |
+
+Utenti (password `test`): `mario.sales` (ruolo `crm-user`), `luigi.finance` (ruolo `orders-user`).
+Client Keycloak: `frontend-web` (public), `mcp-gateway` (secret `mcp-secret-123`, usato dai guard per l'introspection).
+
+Flusso: Agente -> Kong -> OPA Guard (introspection + policy OPA sul tool JSON-RPC) -> Micro-MCP -> API REST con lo stesso JWT.
+
+Policy: `opa/policies/mcp.rego` (test: `docker run --rm -v ./opa/policies:/p openpolicyagent/opa:1.4.1 test /p -v`).
+
+Note: Kong gira in DB-less con `kong/kong.yml`; Postgres serve solo a Keycloak.

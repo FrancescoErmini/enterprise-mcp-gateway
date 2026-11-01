@@ -1,0 +1,18 @@
+_format_version: "3.0"
+
+services:
+  - name: crm-mcp
+    url: http://crm-guard:8090/mcp
+    routes:
+      - name: crm-mcp-route
+        paths:
+          - /mcp/crm
+        strip_path: true
+
+  - name: orders-mcp
+    url: http://orders-guard:8090/mcp
+    routes:
+      - name: orders-mcp-route
+        paths:
+          - /mcp/orders
+        strip_path: true
