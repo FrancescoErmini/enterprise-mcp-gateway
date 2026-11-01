@@ -4,12 +4,16 @@ The user's Keycloak JWT is forwarded on every MCP call, so Kong -> OPA guard -> 
 all act on behalf of the logged-in user.
 """
 import json
+import logging
 import os
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+log = logging.getLogger("chat")
 
 KONG_URL = os.getenv("KONG_URL", "http://kong:8000")
 MCP_PATHS = os.getenv("MCP_PATHS", "/mcp/crm,/mcp/orders").split(",")
@@ -87,6 +91,7 @@ async def chat(req: ChatRequest, request: Request):
         raise HTTPException(500, "OPENAI_API_KEY not configured (.env)")
 
     tools, routes = await discover_tools(token)
+    log.info("user message=%r | tools discovered via Kong: %s", req.messages[-1].get("content"), list(routes))
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + req.messages
     trace = []
 
@@ -102,6 +107,7 @@ async def chat(req: ChatRequest, request: Request):
         if r.status_code != 200:
             raise HTTPException(502, f"OpenAI error {r.status_code}: {r.text[:300]}")
         msg = r.json()["choices"][0]["message"]
+        log.info("OpenAI (%s) -> %s", OPENAI_MODEL, "tool_calls" if msg.get("tool_calls") else "final answer")
         messages.append(msg)
         if not msg.get("tool_calls"):
             return {"reply": msg.get("content") or "", "tool_calls": trace}
@@ -110,7 +116,9 @@ async def chat(req: ChatRequest, request: Request):
             name = call["function"]["name"]
             args = json.loads(call["function"]["arguments"] or "{}")
             path = routes.get(name)
+            log.info("MCP call %s tool=%s args=%s", path, name, args)
             result = await run_tool(path, token, name, args) if path else f"Unknown tool {name}"
+            log.info("MCP result %s: %s", name, result[:120])
             trace.append({"tool": name, "arguments": args, "result": result})
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
 

@@ -44,6 +44,7 @@ def health():
 async def mcp_proxy(request: Request):
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
+        log.warning("401 missing bearer token")
         return rpc_error(401, "Missing bearer token")
     token = auth.split(" ", 1)[1]
 
@@ -55,6 +56,7 @@ async def mcp_proxy(request: Request):
         log.error("introspection failed: %s", exc)
         return rpc_error(502, "Identity provider unavailable")
     if not intro.get("active"):
+        log.warning("401 token inactive (introspection)")
         return rpc_error(401, "Token inactive")
 
     body = await request.body()
@@ -86,13 +88,16 @@ async def mcp_proxy(request: Request):
         return rpc_error(502, "Policy engine unavailable")
 
     allowed = opa.get("allow") is True
-    log.info("user=%s method=%s tool=%s allow=%s", opa_input["token"]["username"],
-             opa_input["rpc"]["method"], opa_input["rpc"]["tool"], allowed)
+    log.info("OPA decision user=%s roles=%s method=%s tool=%s args=%s -> %s%s",
+             opa_input["token"]["username"], opa_input["token"]["roles"], opa_input["rpc"]["method"],
+             opa_input["rpc"]["tool"], opa_input["rpc"]["arguments"], "ALLOW" if allowed else "DENY",
+             "" if allowed else f" ({opa.get('reason')})")
     if not allowed:
         return rpc_error(403, f"Policy denied: {opa.get('reason', 'not allowed')}", rpc.get("id"))
 
     headers = {k: v for k, v in request.headers.items() if k in FORWARD_HEADERS}
     headers["authorization"] = auth
+    log.info("forwarding to %s", UPSTREAM_URL)
     upstream = await client.post(UPSTREAM_URL, content=body, headers=headers)
     out = {k: v for k, v in upstream.headers.items() if k.lower() in ("content-type", "mcp-session-id")}
     return Response(upstream.content, status_code=upstream.status_code, headers=out)

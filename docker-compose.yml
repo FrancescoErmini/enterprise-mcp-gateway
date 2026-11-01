@@ -40,6 +40,7 @@ services:
       KC_DB_PASSWORD: keycloak
       KC_HOSTNAME_URL: http://localhost:8080
       KC_HOSTNAME_STRICT: "false"
+      KC_LOG_LEVEL: "INFO,org.keycloak.events:debug"
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
     ports: ["8080:8080"]
@@ -49,7 +50,7 @@ services:
 
   opa:
     image: openpolicyagent/opa:1.4.1
-    command: run --server --addr=0.0.0.0:8181 --watch /policies
+    command: run --server --addr=0.0.0.0:8181 --watch --set=decision_logs.console=true /policies
     volumes: [./opa/policies:/policies:ro]
     ports: ["8181:8181"]
     networks: [mcp-net]
