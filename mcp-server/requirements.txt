@@ -1,2 +1,0 @@
-requests>=2.31,<3
-fastmcp>=2.11,<3

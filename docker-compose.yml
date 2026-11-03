@@ -1,159 +1,130 @@
-volumes:
-  kong_db_data: {}
-  keycloak_data: {}
-
 networks:
-  kong-net:
-    driver: bridge
+  mcp-net:
 
-x-kong-config: &kong-env
-  KONG_DATABASE: postgres
-  KONG_PG_HOST: kong-database
-  KONG_PG_DATABASE: kong
-  # Default credentials for local dev; change for production
-  KONG_PG_USER: kong
-  KONG_PG_PASSWORD: kong
+volumes:
+  pg_data:
+
+x-guard-env: &guard-env
+  KEYCLOAK_INTROSPECT_URL: http://keycloak:8080/realms/mcp-demo/protocol/openid-connect/token/introspect
+  KEYCLOAK_CLIENT_ID: mcp-gateway
+  KEYCLOAK_CLIENT_SECRET: mcp-secret-123
+  OPA_URL: http://opa:8181/v1/data/mcp/authz
+
+x-api-env: &api-env
+  JWT_ISSUER: http://localhost:8080/realms/mcp-demo
+  JWKS_URL: http://keycloak:8080/realms/mcp-demo/protocol/openid-connect/certs
 
 services:
-  kong-database:
-    container_name: kong-database
-    image: postgres:15-alpine
-    restart: on-failure
-    volumes:
-      - kong_db_data:/var/lib/postgresql/data
-    networks:
-      - kong-net
+  postgres:
+    image: postgres:16-alpine
     environment:
-      POSTGRES_USER: kong
-      POSTGRES_DB: kong
-      POSTGRES_PASSWORD: kong
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+      POSTGRES_DB: keycloak
+    volumes: [pg_data:/var/lib/postgresql/data]
+    networks: [mcp-net]
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "kong"]
+      test: ["CMD", "pg_isready", "-U", "keycloak"]
       interval: 5s
-      timeout: 10s
       retries: 10
 
-  kong-bootstrap:
-    image: kong:latest
-    container_name: kong-bootstrap
-    networks:
-      - kong-net
-    depends_on:
-      kong-database:
-        condition: service_healthy
-    restart: on-failure
-    environment:
-      <<: *kong-env
-    command: kong migrations bootstrap
-
-  kong-gateway:
-    image: kong:latest
-    container_name: kong-gateway
-    restart: on-failure
-    networks:
-      - kong-net
-    environment:
-      <<: *kong-env
-      # Enable the Admin API and the basic Kong Manager OSS
-      KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
-      KONG_ADMIN_LISTEN: 0.0.0.0:8001, 0.0.0.0:8444 ssl
-      KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002, 0.0.0.0:8445 ssl
-    depends_on:
-      kong-bootstrap:
-        condition: service_completed_successfully
-    ports:
-      - "8000:8000"  # Proxy
-      - "8443:8443"  # Proxy SSL
-      - "8001:8001"  # Admin API
-      - "8002:8002"  # Kong Manager GUI
-
-  my-nginx:
-    image: nginx:alpine
-    container_name: my-nginx
-    networks:
-      - kong-net
-
-  weather-api:
-    build:
-      context: ./weatherAPI
-      dockerfile: Dockerfile
-    container_name: weather-api
-    restart: on-failure
-    networks:
-      - kong-net
-    ports:
-      - "5000:5000"
-    environment:
-      FLASK_ENV: production
-
-  mcp-server:
-    build:
-      context: ./mcp-server
-      dockerfile: Dockerfile
-    container_name: mcp-server
-    restart: on-failure
-    networks:
-      - kong-net
-    ports:
-      - "8080:8080"
-    environment:
-      MCP_PORT: 8080
-      MG_API_BASE_URL: https://kresource-dev.menarini.net
-      MG_TOKEN_URL: https://keycloak-dev.menarini.net/auth/realms/menarini/protocol/openid-connect/token
-      MG_CLIENT_ID: mg-app_resourceAdministration
-      MG_CLIENT_SECRET: ${MG_CLIENT_SECRET}
-      MG_USERNAME: kscanner_service_account
-      MG_PASSWORD: ${MG_PASSWORD}
-      MG_VERIFY_SSL: "false"
-      MG_APPLICATION_IDS: ${MG_APPLICATION_IDS:-}
-      MG_APPLICATION_CODES: ${MG_APPLICATION_CODES:-}
-
-  opa:
-    image: openpolicyagent/opa:1.4.1
-    container_name: opa
-    command: >
-      run --server --addr=0.0.0.0:8181 --watch /policies
-    volumes:
-      - ./opa/policies:/policies
-    ports:
-      - "0.0.0.0:8181:8181"
-    networks:
-      - kong-net
-
-  opa-guard:
-    build:
-      context: ./opa-guard
-      dockerfile: Dockerfile
-    container_name: opa-guard
-    restart: on-failure
-    depends_on:
-      - keycloak
-      - mcp-server
-      - opa
-    networks:
-      - kong-net
-    ports:
-      - "8090:8090"
-    environment:
-      KEYCLOAK_INTROSPECT_URL: http://keycloak:8080/realms/mcp/protocol/openid-connect/token/introspect
-      KEYCLOAK_CLIENT_ID: mcp
-      KEYCLOAK_CLIENT_SECRET: uOxcgeKNfuWs7QK4D8qTqsQ8JzsLJe22
-      KEYCLOAK_INTROSPECT_HOST_HEADER: localhost:8081
-      OPA_URL: http://opa:8181/v1/data/mcp/allow
-      MCP_SERVER_URL: http://mcp-server:8080/mcp
-
   keycloak:
-    image: quay.io/keycloak/keycloak:21.1.1
-    container_name: keycloak
-    command:
-      - start-dev
+    image: quay.io/keycloak/keycloak:24.0.5
+    command: start-dev --import-realm --features=token-exchange
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
-      KEYCLOAK_FRONTEND_URL: http://localhost:8081/auth
-    ports:
-      - "8081:8080"
-    networks:
-      - kong-net
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      KC_HOSTNAME_URL: http://localhost:8080
+      KC_HOSTNAME_STRICT: "false"
+      KC_LOG_LEVEL: "INFO,org.keycloak.events:debug"
     volumes:
-      - keycloak_data:/opt/keycloak/data
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    ports: ["8080:8080"]
+    networks: [mcp-net]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  opa:
+    image: openpolicyagent/opa:1.4.1
+    command: run --server --addr=0.0.0.0:8181 --watch --set=decision_logs.console=true /policies
+    volumes: [./opa/policies:/policies:ro]
+    ports: ["8181:8181"]
+    networks: [mcp-net]
+
+  crm-api:
+    build: ./crm-api
+    environment: *api-env
+    ports: ["8001:8000"]
+    networks: [mcp-net]
+
+  orders-api:
+    build: ./orders-api
+    environment: *api-env
+    ports: ["8002:8000"]
+    networks: [mcp-net]
+
+  crm-mcp:
+    build: ./crm-mcp
+    environment:
+      CRM_API_URL: http://crm-api:8000
+    networks: [mcp-net]
+    depends_on: [crm-api]
+
+  orders-mcp:
+    build: ./orders-mcp
+    environment:
+      ORDERS_API_URL: http://orders-api:8000
+    networks: [mcp-net]
+    depends_on: [orders-api]
+
+  crm-opa-guard:
+    build: ./opa-guard
+    environment:
+      <<: *guard-env
+      DOMAIN: crm
+      UPSTREAM_URL: http://crm-mcp:8000/mcp
+    networks: [mcp-net]
+    depends_on: [crm-mcp, opa, keycloak]
+
+  orders-opa-guard:
+    build: ./opa-guard
+    environment:
+      <<: *guard-env
+      DOMAIN: orders
+      UPSTREAM_URL: http://orders-mcp:8000/mcp
+    networks: [mcp-net]
+    depends_on: [orders-mcp, opa, keycloak]
+
+  kong:
+    image: kong:3.7
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 127.0.0.1:8001
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+    volumes: [./kong/kong.yml:/kong/kong.yml:ro]
+    ports: ["8000:8000"]
+    networks: [mcp-net]
+    depends_on: [crm-opa-guard, orders-opa-guard]
+
+  frontend:
+    build: ./frontend
+    ports: ["3000:80"]
+    networks: [mcp-net]
+
+  chat:
+    build: ./chat
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      KONG_URL: http://kong:8000
+    ports: ["3001:8000"]
+    networks: [mcp-net]
+    depends_on: [kong]

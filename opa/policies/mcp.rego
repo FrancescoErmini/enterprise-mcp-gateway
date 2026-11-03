@@ -1,77 +1,63 @@
-package mcp
+package mcp.authz
 
 import rego.v1
 
+# No roles are hardcoded here: tool -> app / roles_required comes from data.tool_registry
+# (opa/policies/data.json, hot-reloaded by OPA --watch).
+
 default allow := false
 
-# ---- Configuration (edit to match your environment) ----
-allowed_issuers := {
-  "http://localhost:8081/realms/mcp",
-}
+roles := object.get(input.token, "roles", [])
 
-allowed_clients := {
-  "mcp",
-}
-
-# Choose one approach for users:
-# A) allowlist of usernames
-allowed_users := {
-  "testuser01",
-}
-
-# B) allowlist of emails (optional)
-allowed_emails := {
-  "fermini@menarini.it",
-}
-
-# ---- Helpers ----
-now_s := time.now_ns() / 1000000000
-
-client_id := input.token.azp if input.token.azp
-client_id := input.token.client_id if input.token.client_id  # some introspection payloads
-
-username := input.token.preferred_username if input.token.preferred_username
-email := input.token.email if input.token.email
-
-valid_issuer if allowed_issuers[input.token.iss]
-
-valid_client if allowed_clients[client_id]
-
-valid_user if allowed_users[username]
-valid_user if allowed_emails[email]
-
-not_expired if {
-  # Only enforce exp if present (JWT has it; introspection sometimes uses "exp" too)
-  not input.token.exp
-} else if {
-  input.token.exp > now_s
-}
-
-# Optional: require token active if you're passing introspection response
-active if {
-  not input.token.active
-} else if {
-  input.token.active == true
-}
-
-# Optional: role check (Keycloak JWT typically has realm_access.roles)
-has_role(role) if {
-  roles := input.token.realm_access.roles
-  roles[_] == role
-}
-
-# ---- Main decision ----
+# Protocol-level calls (initialize, tools/list, ping, notifications) only need a valid token.
 allow if {
-  valid_issuer
-  active
-  not_expired
-  valid_client
-  valid_user
+	input.token.active == true
+	input.rpc.method != "tools/call"
+}
 
-  # Optional: require a role
-  # has_role("uma_authorization")
+# Tool invocations: the tool must be registered for the domain being called, and the user
+# must hold at least one of the roles required by the registry entry.
+allow if {
+	input.token.active == true
+	input.rpc.method == "tools/call"
+	entry := data.tool_registry[input.rpc.tool]
+	entry.app == input.domain
+	some required in entry.roles_required
+	required in roles
+}
 
-  # Optional: authorize by HTTP request
-  # input.request.http.method == "POST"
-  # input.request.http.path == "/mcp"
+# Tools the user may see/use on this domain (used by the guard to filter tools/list).
+allowed_tools := {name |
+	some name, entry in data.tool_registry
+	entry.app == input.domain
+	some required in entry.roles_required
+	required in roles
+}
+
+reason := "token inactive" if not input.token.active == true
+
+reason := sprintf("unknown tool '%s'", [input.rpc.tool]) if {
+	input.token.active == true
+	input.rpc.method == "tools/call"
+	not data.tool_registry[input.rpc.tool]
+}
+
+reason := sprintf("tool '%s' belongs to app '%s', not '%s'", [input.rpc.tool, entry.app, input.domain]) if {
+	input.token.active == true
+	input.rpc.method == "tools/call"
+	entry := data.tool_registry[input.rpc.tool]
+	entry.app != input.domain
+}
+
+reason := sprintf("user '%s' lacks any of roles %v for tool '%s'", [input.token.username, entry.roles_required, input.rpc.tool]) if {
+	input.token.active == true
+	input.rpc.method == "tools/call"
+	entry := data.tool_registry[input.rpc.tool]
+	entry.app == input.domain
+	not user_has_required_role(entry)
+}
+
+user_has_required_role(entry) if {
+	some required in entry.roles_required
+	required in roles
 }

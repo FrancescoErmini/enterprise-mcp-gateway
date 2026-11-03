@@ -1,134 +1,118 @@
-import os
-from functools import partial
+"""OPA Guard: domain-level PEP in front of a Micro-MCP server.
+
+Flow: Bearer token -> Keycloak introspection -> JSON-RPC inspection -> OPA decision -> proxy.
+"""
+import json
 import logging
+import os
 
-import requests
-from flask import Flask, Response, jsonify, request, stream_with_context
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, Response
 
-KEYCLOAK_INTROSPECT_URL = os.getenv(
+DOMAIN = os.getenv("DOMAIN", "unknown")
+UPSTREAM_URL = os.environ["UPSTREAM_URL"]
+INTROSPECT_URL = os.getenv(
     "KEYCLOAK_INTROSPECT_URL",
-    "http://localhost:8081/realms/mcp/protocol/openid-connect/token/introspect",
+    "http://keycloak:8080/realms/mcp-demo/protocol/openid-connect/token/introspect",
 )
-KEYCLOAK_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID", "mcp")
-KEYCLOAK_CLIENT_SECRET = os.getenv(
-    "KEYCLOAK_CLIENT_SECRET", "uOxcgeKNfuWs7QK4D8qTqsQ8JzsLJe22"
-)
-KEYCLOAK_INTROSPECT_HOST_HEADER = os.getenv("KEYCLOAK_INTROSPECT_HOST_HEADER")
-OPA_URL = os.getenv("OPA_URL", "http://opa:8181/v1/data/mcp/allow")
-MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://mcp-server:8080/mcp")
+CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID", "mcp-gateway")
+CLIENT_SECRET = os.getenv("KEYCLOAK_CLIENT_SECRET", "mcp-secret-123")
+OPA_URL = os.getenv("OPA_URL", "http://opa:8181/v1/data/mcp/authz")
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-logger = logging.getLogger("opa-guard")
+log = logging.getLogger(f"guard-{DOMAIN}")
 
-app = Flask(__name__)
+app = FastAPI(title=f"OPA Guard ({DOMAIN})")
+client = httpx.AsyncClient(timeout=30)
 
-
-def introspect_token(token: str) -> dict:
-    headers = {}
-    if KEYCLOAK_INTROSPECT_HOST_HEADER:
-        headers["Host"] = KEYCLOAK_INTROSPECT_HOST_HEADER
-    resp = requests.post(
-        KEYCLOAK_INTROSPECT_URL,
-        data={"token": token},
-        auth=(KEYCLOAK_CLIENT_ID, KEYCLOAK_CLIENT_SECRET),
-        timeout=50,
-        headers=headers or None,
-    )
-    resp.raise_for_status()
-    logger.info(
-        "Keycloak introspection request payload=%s headers=%s",
-        resp.request.body,
-        resp.request.headers,
-    )
-    body = resp.json()
-    logger.info(
-        "Keycloak introspection response status=%s body=%s",
-        resp.status_code,
-        body,
-    )
-    return resp.json()
+FORWARD_HEADERS = ("accept", "content-type", "mcp-session-id", "mcp-protocol-version")
 
 
-def evaluate_policy(token_info: dict) -> bool:
-    logger.info("Evaluating OPA policy for token_info=%s", token_info)
-    payload = {
-        "input": {
-            "token": token_info,
-            "request": {
-                "http": {
-                    "method": request.method,
-                    "path": request.path,
-                    "headers": dict(request.headers),
-                }
-            },
-        }
-    }
-    headers = {}
-    if KEYCLOAK_INTROSPECT_HOST_HEADER:
-        headers["Host"] = KEYCLOAK_INTROSPECT_HOST_HEADER
-    resp = requests.post(OPA_URL, json=payload, timeout=5, headers=headers or None,)
-    resp.raise_for_status()
-    result = bool(resp.json().get("result"))
-    logger.info("OPA request payload=%s response=%s", payload, resp.json())
-    logger.info("OPA decision=%s payload=%s", result, payload)
-    return result
-
-
-def forward_to_mcp() -> Response:
-    downstream_headers = {
-        "Content-Type": request.headers.get("Content-Type", "application/json"),
-        "Accept": request.headers.get("Accept", "application/json"),
-    }
-    logger.info("Forwarding request to MCP: headers=%s", downstream_headers)
-    resp = requests.post(
-        MCP_SERVER_URL,
-        headers=downstream_headers,
-        data=request.get_data(),
-        timeout=30,
-        stream=True,
-    )
-
-    output_headers = {
-        "Content-Type": resp.headers.get("Content-Type", "text/event-stream"),
-    }
-
-    def stream():
-        for chunk in resp.iter_content(chunk_size=8192):
-            if chunk:
-                yield chunk
-
-    return Response(
-        stream_with_context(stream()),
-        status=resp.status_code,
-        headers=output_headers,
+def rpc_error(status: int, message: str, rpc_id=None) -> JSONResponse:
+    return JSONResponse(
+        {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32001, "message": message}},
+        status_code=status,
     )
 
 
-@app.route("/health")
+@app.get("/health")
 def health():
-    return jsonify(status="ok")
+    return {"status": "ok", "domain": DOMAIN}
 
 
-@app.route("/mcp", methods=["POST"])
-def proxy_tool():
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        logger.warning("Missing Authorization header")
-        return jsonify(error="Missing bearer token"), 401
+@app.post("/mcp")
+async def mcp_proxy(request: Request):
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        log.warning("401 missing bearer token")
+        return rpc_error(401, "Missing bearer token")
     token = auth.split(" ", 1)[1]
-    logger.info("Received Authorization header token=%s", token[:20] + "..." if len(token) > 20 else token)
-    token_info = introspect_token(token)
-    logger.info("Token introspection result: %s", token_info)
-    if not token_info.get("active"):
-        logger.warning("Token inactive, introspection=%s", token_info)
-        return jsonify(error="Token inactive"), 401
 
-    if not evaluate_policy(token_info):
-        logger.warning("Policy rejected, token=%s", token_info.get("sub"))
-        return jsonify(error="Policy rejected the call"), 403
+    try:
+        intro = (
+            await client.post(INTROSPECT_URL, data={"token": token}, auth=(CLIENT_ID, CLIENT_SECRET))
+        ).json()
+    except Exception as exc:
+        log.error("introspection failed: %s", exc)
+        return rpc_error(502, "Identity provider unavailable")
+    if not intro.get("active"):
+        log.warning("401 token inactive (introspection)")
+        return rpc_error(401, "Token inactive")
 
-    return forward_to_mcp()
+    body = await request.body()
+    try:
+        rpc = await request.json()
+    except Exception:
+        return rpc_error(400, "Invalid JSON-RPC payload")
+    if not isinstance(rpc, dict):
+        return rpc_error(400, "JSON-RPC batches are not supported")
+    params = rpc.get("params") or {}
 
+    opa_input = {
+        "domain": DOMAIN,
+        "token": {
+            "active": True,
+            "username": intro.get("preferred_username"),
+            "roles": intro.get("realm_access", {}).get("roles", []),
+        },
+        "rpc": {
+            "method": rpc.get("method"),
+            "tool": params.get("name"),
+            "arguments": params.get("arguments") or {},
+        },
+    }
+    try:
+        opa = (await client.post(OPA_URL, json={"input": opa_input})).json().get("result", {})  # allow, reason, allowed_tools
+    except Exception as exc:
+        log.error("OPA failed: %s", exc)
+        return rpc_error(502, "Policy engine unavailable")
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8090)
+    allowed = opa.get("allow") is True
+    log.info("OPA decision user=%s roles=%s method=%s tool=%s args=%s -> %s%s",
+             opa_input["token"]["username"], opa_input["token"]["roles"], opa_input["rpc"]["method"],
+             opa_input["rpc"]["tool"], opa_input["rpc"]["arguments"], "ALLOW" if allowed else "DENY",
+             "" if allowed else f" ({opa.get('reason')})")
+    if not allowed:
+        return rpc_error(403, f"Policy denied: {opa.get('reason', 'not allowed')}", rpc.get("id"))
+
+    headers = {k: v for k, v in request.headers.items() if k in FORWARD_HEADERS}
+    headers["authorization"] = auth
+    log.info("forwarding to %s", UPSTREAM_URL)
+    upstream = await client.post(UPSTREAM_URL, content=body, headers=headers)
+    out = {k: v for k, v in upstream.headers.items() if k.lower() in ("content-type", "mcp-session-id")}
+    content = upstream.content
+
+    # Dynamic filtering: tools/list only exposes the tools the registry allows for this user.
+    if rpc.get("method") == "tools/list":
+        try:
+            body_json = upstream.json()
+            visible = set(opa.get("allowed_tools", []))
+            tools = body_json.get("result", {}).get("tools", [])
+            body_json["result"]["tools"] = [t for t in tools if t.get("name") in visible]
+            content = json.dumps(body_json).encode()
+            log.info("tools/list filtered: %d -> %d visible=%s", len(tools),
+                     len(body_json["result"]["tools"]), sorted(visible))
+        except (ValueError, KeyError, AttributeError):
+            log.warning("tools/list response not filterable, forwarded as is")
+    return Response(content, status_code=upstream.status_code, headers=out)
